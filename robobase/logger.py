@@ -1,5 +1,6 @@
 import csv
 import datetime
+import sys
 from collections import defaultdict
 from pathlib import Path
 from omegaconf import OmegaConf
@@ -8,6 +9,7 @@ import numpy as np
 import torch
 import wandb
 from termcolor import colored
+from tqdm import tqdm
 
 COMMON_PRETRAIN_FORMAT = [
     ("iteration", "Iter", "int"),
@@ -35,6 +37,70 @@ COMMON_EVAL_FORMAT = [
     ("episode_reward", "R", "float"),
     ("total_time", "T", "time"),
 ]
+
+# SB3-style metric name mapping
+METRIC_NAME_MAP = {
+    "episode_reward": "ep_rew_mean",
+    "episode_length": "ep_len_mean",
+    "env_steps": "total_timesteps",
+    "env_episodes": "episodes",
+    "env_steps_per_second": "fps",
+    "agent_batched_updates_per_second": "update_fps",
+    "buffer_size": "buffer_size",
+    "iteration": "iterations",
+    "total_time": "time_elapsed",
+    "actor_loss": "actor_loss",
+    "critic_loss": "critic_loss",
+    "alpha_loss": "alpha_loss",
+    "alpha": "alpha",
+}
+
+# Categories for grouping metrics
+ROLLOUT_METRICS = {"ep_rew_mean", "ep_len_mean", "success_rate"}
+TIME_METRICS = {"fps", "update_fps", "iterations", "total_timesteps", "time_elapsed", "episodes"}
+TRAIN_METRICS = {"actor_loss", "critic_loss", "alpha_loss", "alpha", "buffer_size"}
+
+
+def _format_value(value, ty):
+    """Format a value for display."""
+    if ty == "int":
+        return str(int(value))
+    elif ty == "float":
+        if abs(value) < 0.01 and value != 0:
+            return f"{value:.2e}"
+        elif abs(value) >= 1000:
+            return f"{value:.2e}"
+        else:
+            return f"{value:.4f}"
+    elif ty == "time":
+        return str(datetime.timedelta(seconds=int(value)))
+    else:
+        return str(value)
+
+
+def _get_metric_type(key):
+    """Infer metric type from key name."""
+    if "loss" in key or "alpha" in key:
+        return "float"
+    elif key == "time_elapsed":
+        return "time"
+    elif any(x in key for x in ["steps", "episodes", "iterations", "size", "len"]):
+        return "int"
+    elif "reward" in key or "fps" in key or "rate" in key:
+        return "float"
+    return "float"
+
+
+def _categorize_metric(key):
+    """Determine which category a metric belongs to."""
+    if key in ROLLOUT_METRICS:
+        return "rollout"
+    elif key in TIME_METRICS:
+        return "time"
+    elif key in TRAIN_METRICS:
+        return "train"
+    else:
+        return "other"
 
 
 class AverageMeter(object):
@@ -121,18 +187,69 @@ class MetersGroup(object):
             raise f"invalid format type: {ty}"
 
     def _dump_to_console(self, data, prefix):
+        """Output in SB3-style table format."""
+        if not data:
+            return
+
+        # Convert keys to SB3-style names, filtering out verbose env_info
+        sb3_data = {}
+        for key, value in data.items():
+            # Skip verbose env_info metrics
+            if key.startswith("env_info"):
+                continue
+            sb3_key = METRIC_NAME_MAP.get(key, key)
+            sb3_data[sb3_key] = value
+
+        # Group by category
+        categories = defaultdict(dict)
+        for key, value in sb3_data.items():
+            cat = _categorize_metric(key)
+            categories[cat][key] = value
+
+        # Add prefix-specific metrics
+        if prefix == "eval":
+            categories["rollout"] = {
+                k: v for k, v in sb3_data.items() if k in ROLLOUT_METRICS
+            }
+
+        # Calculate column widths
+        key_width = 22
+        val_width = 12
+
+        # Build output lines
+        lines = []
+        border = "-" * (key_width + val_width + 5)
+
         if prefix == "train":
             color = "yellow"
         elif prefix == "pretrain":
             color = "red"
         else:
             color = "green"
-        prefix = colored(prefix, color)
-        pieces = [f"| {prefix: <14}"]
-        for key, disp_key, ty in self._formating:
-            value = data.get(key, 0)
-            pieces.append(self._format(disp_key, value, ty))
-        print(" | ".join(pieces))
+
+        lines.append(colored(border, color))
+
+        # Print each category
+        category_order = ["rollout", "time", "train", "other"]
+        for cat in category_order:
+            if cat not in categories or not categories[cat]:
+                continue
+
+            # Category header
+            header = f"| {cat}/"
+            lines.append(colored(f"{header:<{key_width}}|{' ' * val_width}|", color))
+
+            # Metrics in this category
+            for key, value in sorted(categories[cat].items()):
+                ty = _get_metric_type(key)
+                formatted = _format_value(value, ty)
+                line = f"|    {key:<{key_width - 5}}| {formatted:<{val_width - 1}}|"
+                lines.append(colored(line, color))
+
+        lines.append(colored(border, color))
+
+        # Use tqdm.write() to avoid disrupting progress bar
+        tqdm.write("\n".join(lines), file=sys.stdout)
 
     def dump(self, step, prefix):
         if len(self._meters) == 0:
@@ -147,6 +264,7 @@ class MetersGroup(object):
 class Logger(object):
     def __init__(self, log_dir, cfg):
         self._log_dir = log_dir
+        self._cfg = cfg
         self._pretrain_mg = MetersGroup(
             log_dir / "pretrain.csv", COMMON_PRETRAIN_FORMAT, cfg.save_csv
         )
@@ -190,6 +308,19 @@ class Logger(object):
                 else cfg.tb.name
             )
             self._sw = SummaryWriter(str(Path(cfg.tb.log_dir) / logdir))
+
+        # Initialize tqdm progress bar
+        total_steps = getattr(cfg, "num_train_frames", None)
+        self._pbar = None
+        self._last_step = 0
+        if total_steps:
+            self._pbar = tqdm(
+                total=total_steps,
+                desc="Training",
+                unit="steps",
+                dynamic_ncols=True,
+                file=sys.stdout,
+            )
 
     def _try_log(self, key, value, step, is_video=False):
         if self._use_wandb:
@@ -262,6 +393,10 @@ class Logger(object):
             self._eval_mg.dump(step, "eval")
         if prefix is None or prefix == "train":
             self._train_mg.dump(step, "train")
+            # Update progress bar on train dumps
+            if self._pbar is not None:
+                self._pbar.update(step - self._last_step)
+                self._last_step = step
         if prefix is None or prefix == "pretrain":
             self._pretrain_mg.dump(step, "pretrain")
         if prefix is None or prefix == "pretrain_eval":
@@ -278,3 +413,8 @@ class Logger(object):
             else:
                 self._log(f"{prefix}/{key}", value, step)
         self._dump(step, prefix)
+
+    def close(self):
+        """Close the logger and progress bar."""
+        if self._pbar is not None:
+            self._pbar.close()
