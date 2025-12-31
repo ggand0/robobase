@@ -260,6 +260,7 @@ class Workspace:
             self.eval_env = None
 
         self._shutting_down = False
+        self._best_eval_reward = float("-inf")
 
     @property
     def pretrain_steps(self):
@@ -683,6 +684,9 @@ class Workspace:
                 self.logger.log_metrics(
                     eval_metrics, self.global_env_steps, prefix="eval"
                 )
+                # Save best model based on eval reward
+                if "episode_reward" in eval_metrics:
+                    self.save_best_snapshot(eval_metrics["episode_reward"])
 
             if should_save_snapshot(self.main_loop_iterations):
                 self.save_snapshot()
@@ -729,6 +733,25 @@ class Workspace:
             torch.save(payload, f)
         latest_snapshot = self.work_dir / "snapshots" / "latest_snapshot.pt"
         shutil.copy(snapshot, latest_snapshot)
+
+    def save_best_snapshot(self, eval_reward: float):
+        """Save snapshot if this is the best eval reward so far."""
+        if eval_reward > self._best_eval_reward:
+            self._best_eval_reward = eval_reward
+            best_snapshot = self.work_dir / "snapshots" / "best_snapshot.pt"
+            best_snapshot.parent.mkdir(parents=True, exist_ok=True)
+            keys_to_save = [
+                "_pretrain_step",
+                "_main_loop_iterations",
+                "_global_env_episode",
+                "cfg",
+            ]
+            payload = {k: self.__dict__[k] for k in keys_to_save}
+            payload["agent"] = self.agent.state_dict()
+            payload["best_eval_reward"] = eval_reward
+            with best_snapshot.open("wb") as f:
+                torch.save(payload, f)
+            print(f"New best model saved! Reward: {eval_reward:.2f}")
 
     def load_snapshot(self, path_to_snapshot_to_load=None):
         if path_to_snapshot_to_load is None:
