@@ -631,7 +631,7 @@ class Workspace:
         observations, info = self.train_envs.reset()
         #  We use agent 0 to accumulate stats about how the training agents are doing
         agent_0_ep_len = agent_0_reward = 0
-        agent_0_prev_ep_len = agent_0_prev_reward = None
+        agent_0_prev_ep_len = agent_0_prev_reward = agent_0_prev_success = None
         while train_until_frame(self.global_env_steps):
             metrics = {}
             self.agent.logging = False
@@ -652,6 +652,9 @@ class Workspace:
             if terminations[0] or truncations[0]:
                 agent_0_prev_ep_len = agent_0_ep_len
                 agent_0_prev_reward = agent_0_reward
+                # Extract success from final_info
+                final_info = next_info.get("final_info", [{}])[0] if "final_info" in next_info else {}
+                agent_0_prev_success = float(final_info.get("task_success", 0) > 0)
                 agent_0_ep_len = agent_0_reward = 0
 
             metrics.update(env_metrics)
@@ -676,6 +679,8 @@ class Workspace:
                             * self.cfg.action_repeat,
                         }
                     )
+                    if agent_0_prev_success is not None:
+                        metrics["episode_success"] = agent_0_prev_success
                 self.logger.log_metrics(metrics, self.global_env_steps, prefix="train")
 
             if should_eval(self.main_loop_iterations):
@@ -690,6 +695,9 @@ class Workspace:
 
             if should_save_snapshot(self.main_loop_iterations):
                 self.save_snapshot()
+
+            # Update progress bar every iteration
+            self.logger.update_step(self.global_env_steps)
 
             if self._shutting_down:
                 break

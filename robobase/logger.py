@@ -415,6 +415,14 @@ class Logger(object):
                 self._log(f"{prefix}/{key}", value, step)
         self._dump(step, prefix)
 
+    def update_step(self, step):
+        """Update progress bar without logging metrics."""
+        if self._pbar is not None:
+            delta = step - self._last_step
+            if delta > 0:
+                self._pbar.update(delta)
+                self._last_step = step
+
     def close(self):
         """Close the logger and progress bar."""
         if self._pbar is not None:
