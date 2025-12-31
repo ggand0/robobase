@@ -42,6 +42,7 @@ COMMON_EVAL_FORMAT = [
 METRIC_NAME_MAP = {
     "episode_reward": "ep_rew_mean",
     "episode_length": "ep_len_mean",
+    "episode_success": "success_rate",
     "env_steps": "total_timesteps",
     "env_episodes": "episodes",
     "env_steps_per_second": "fps",
