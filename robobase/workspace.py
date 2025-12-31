@@ -765,7 +765,7 @@ class Workspace:
                 f"Provided file '{str(path_to_snapshot_to_load)}' is not a snapshot."
             )
         with path_to_snapshot_to_load.open("rb") as f:
-            payload = torch.load(f, map_location="cpu")
+            payload = torch.load(f, map_location="cpu", weights_only=False)
         self.agent.load_state_dict(payload.pop("agent"))
         for k, v in payload.items():
             self.__dict__[k] = v
