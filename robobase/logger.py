@@ -301,14 +301,10 @@ class Logger(object):
                 from torch.utils.tensorboard import SummaryWriter
             except ImportError as e:
                 raise ImportError("Please run `pip install tensorboard`") from e
-            from datetime import datetime
 
-            logdir = (
-                datetime.now().strftime("%m_%d_%Y_%H_%M_%S")
-                if cfg.tb.name is None
-                else cfg.tb.name
-            )
-            self._sw = SummaryWriter(str(Path(cfg.tb.log_dir) / logdir))
+            # Save tensorboard logs in the work_dir (per-run), not a shared location
+            tb_log_path = log_dir / "tb_logs"
+            self._sw = SummaryWriter(str(tb_log_path))
 
         # Initialize tqdm progress bar
         total_steps = getattr(cfg, "num_train_frames", None)
