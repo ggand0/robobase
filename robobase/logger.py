@@ -6,7 +6,10 @@ from omegaconf import OmegaConf
 
 import numpy as np
 import torch
-import wandb
+try:
+    import wandb
+except ImportError:
+    wandb = None
 from termcolor import colored
 
 COMMON_PRETRAIN_FORMAT = [
@@ -159,7 +162,7 @@ class Logger(object):
         self._eval_mg = MetersGroup(
             log_dir / "eval.csv", COMMON_EVAL_FORMAT, cfg.save_csv
         )
-        self._use_wandb = cfg.wandb.use
+        self._use_wandb = cfg.wandb.use and wandb is not None
         self._use_tb = cfg.tb.use
         if self._use_wandb and self._use_tb:
             raise ValueError(
@@ -168,10 +171,7 @@ class Logger(object):
             )
         self._wandb_logs = {}
         if self._use_wandb:
-            import wandb
-
             cfg_dict = OmegaConf.to_container(cfg, resolve=False)
-
             wandb.init(
                 project=cfg.wandb.project,
                 name=cfg.wandb.name,
